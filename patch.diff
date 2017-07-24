@@ -1,0 +1,1818 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1516,8 +1516,8 @@
+ 	ADD_CHECK_CXX_COMPILER_FLAG(CXX_WARNINGS CXX_WARN_NO_SIGN_COMPARE -Wno-sign-compare)
+ 
+ 	# disable numbered, false positives
+-	set(C_WARNINGS "${C_WARNINGS} -wd188,186,144,913,556")
+-	set(CXX_WARNINGS "${CXX_WARNINGS} -wd188,186,144,913,556")
++	set(C_WARNINGS "${C_WARNINGS} -wd188,186,144,913,556,47,177,858,1875,2621,1011,780,1292,597,167")
++	set(CXX_WARNINGS "${CXX_WARNINGS} -wd188,186,144,913,556,47,177,858,1875,2621,1011,780,1292,597,167")
+ elseif(CMAKE_C_COMPILER_ID MATCHES "MSVC")
+ 	# most msvc warnings are C & C++
+ 	set(_WARNINGS
+diff --git a/intern/cycles/CMakeLists.txt b/intern/cycles/CMakeLists.txt
+--- a/intern/cycles/CMakeLists.txt
++++ b/intern/cycles/CMakeLists.txt
+@@ -162,6 +162,7 @@
+ set(WITH_CYCLES_DEVICE_OPENCL TRUE)
+ set(WITH_CYCLES_DEVICE_CUDA TRUE)
+ set(WITH_CYCLES_DEVICE_MULTI TRUE)
++set(WITH_CYCLES_DEVICE_OPENMP TRUE)
+ 
+ if(CYCLES_STANDALONE_REPOSITORY)
+ 	TEST_UNORDERED_MAP_SUPPORT()
+diff --git a/intern/cycles/app/cycles_standalone.cpp b/intern/cycles/app/cycles_standalone.cpp
+--- a/intern/cycles/app/cycles_standalone.cpp
++++ b/intern/cycles/app/cycles_standalone.cpp
+@@ -451,7 +451,7 @@
+ 		fprintf(stderr, "Unknown shading system: %s\n", ssname.c_str());
+ 		exit(EXIT_FAILURE);
+ 	}
+-	else if(options.scene_params.shadingsystem == SHADINGSYSTEM_OSL && options.session_params.device.type != DEVICE_CPU) {
++	else if(options.scene_params.shadingsystem == SHADINGSYSTEM_OSL && options.session_params.device.type != DEVICE_CPU && options.session_params.device.type != DEVICE_OPENMP) {
+ 		fprintf(stderr, "OSL shading system only works with CPU device\n");
+ 		exit(EXIT_FAILURE);
+ 	}
+diff --git a/intern/cycles/blender/addon/properties.py b/intern/cycles/blender/addon/properties.py
+--- a/intern/cycles/blender/addon/properties.py
++++ b/intern/cycles/blender/addon/properties.py
+@@ -126,7 +126,8 @@
+ enum_device_type = (
+     ('CPU', "CPU", "CPU", 0),
+     ('CUDA', "CUDA", "CUDA", 1),
+-    ('OPENCL', "OpenCL", "OpenCL", 2)
++    ('OPENCL', "OpenCL", "OpenCL", 2),
++    ('OPENMP', "OpenMP", "OpenMP", 3)
+     )
+ 
+ enum_texture_limit = (
+@@ -1224,12 +1225,14 @@
+ 
+     def get_device_types(self, context):
+         import _cycles
+-        has_cuda, has_opencl = _cycles.get_device_types()
++        has_cuda, has_opencl, has_openmp = _cycles.get_device_types()
+         list = [('NONE', "None", "Don't use compute device", 0)]
+         if has_cuda:
+             list.append(('CUDA', "CUDA", "Use CUDA for GPU acceleration", 1))
+         if has_opencl:
+             list.append(('OPENCL', "OpenCL", "Use OpenCL for GPU acceleration", 2))
++        if has_openmp:
++            list.append(('OPENMP', "OpenMP", "Use OpenMP for CPU/MIC acceleration", 3))
+         return list
+ 
+     compute_device_type = EnumProperty(
+@@ -1247,8 +1250,9 @@
+ 
+         cuda_devices = []
+         opencl_devices = []
++        openmp_devices = []
+         for device in device_list:
+-            if not device[1] in {'CUDA', 'OPENCL'}:
++            if not device[1] in {'CUDA', 'OPENCL', 'OPENMP'}:
+                 continue
+ 
+             entry = None
+@@ -1269,7 +1273,9 @@
+                 cuda_devices.append(entry)
+             elif entry.type == 'OPENCL':
+                 opencl_devices.append(entry)
+-        return cuda_devices, opencl_devices
++            elif entry.type == 'OPENMP':
++                openmp_devices.append(entry)
++        return cuda_devices, opencl_devices, openmp_devices
+ 
+ 
+     def get_num_gpu_devices(self):
+@@ -1293,7 +1299,7 @@
+         layout.label(text="Cycles Compute Device:")
+         layout.row().prop(self, "compute_device_type", expand=True)
+ 
+-        cuda_devices, opencl_devices = self.get_devices()
++        cuda_devices, opencl_devices, openmp_devices = self.get_devices()
+         row = layout.row()
+ 
+         if self.compute_device_type == 'CUDA' and cuda_devices:
+@@ -1306,6 +1312,10 @@
+             for device in opencl_devices:
+                 col.prop(device, "use", text=device.name, toggle=True)
+ 
++        if self.compute_device_type == 'OPENMP' and openmp_devices:
++            col = row.column(align=True)
++            for device in openmp_devices:
++                col.prop(device, "use", text=device.name, toggle=True)
+ 
+     def draw(self, context):
+         self.draw_impl(self.layout, context)
+diff --git a/intern/cycles/blender/blender_python.cpp b/intern/cycles/blender/blender_python.cpp
+--- a/intern/cycles/blender/blender_python.cpp
++++ b/intern/cycles/blender/blender_python.cpp
+@@ -729,14 +729,16 @@
+ static PyObject *get_device_types_func(PyObject * /*self*/, PyObject * /*args*/)
+ {
+ 	vector<DeviceInfo>& devices = Device::available_devices();
+-	bool has_cuda = false, has_opencl = false;
++	bool has_cuda = false, has_opencl = false, has_openmp = false;
+ 	for(int i = 0; i < devices.size(); i++) {
+ 		has_cuda   |= (devices[i].type == DEVICE_CUDA);
+ 		has_opencl |= (devices[i].type == DEVICE_OPENCL);
++		has_openmp |= (devices[i].type == DEVICE_OPENMP);
+ 	}
+-	PyObject *list = PyTuple_New(2);
++	PyObject *list = PyTuple_New(3);
+ 	PyTuple_SET_ITEM(list, 0, PyBool_FromLong(has_cuda));
+ 	PyTuple_SET_ITEM(list, 1, PyBool_FromLong(has_opencl));
++	PyTuple_SET_ITEM(list, 2, PyBool_FromLong(has_openmp));
+ 	return list;
+ }
+ 
+diff --git a/intern/cycles/blender/blender_session.cpp b/intern/cycles/blender/blender_session.cpp
+--- a/intern/cycles/blender/blender_session.cpp
++++ b/intern/cycles/blender/blender_session.cpp
+@@ -115,7 +115,7 @@
+ void BlenderSession::create_session()
+ {
+ 	SessionParams session_params = BlenderSync::get_session_params(b_engine, b_userpref, b_scene, background);
+-	bool is_cpu = session_params.device.type == DEVICE_CPU;
++	bool is_cpu = session_params.device.type == DEVICE_CPU || session_params.device.type == DEVICE_OPENMP;
+ 	SceneParams scene_params = BlenderSync::get_scene_params(b_scene, background, is_cpu);
+ 	bool session_pause = BlenderSync::get_session_pause(b_scene, background);
+ 
+@@ -179,7 +179,7 @@
+ 	b_scene = b_scene_;
+ 
+ 	SessionParams session_params = BlenderSync::get_session_params(b_engine, b_userpref, b_scene, background);
+-	const bool is_cpu = session_params.device.type == DEVICE_CPU;
++	const bool is_cpu = session_params.device.type == DEVICE_CPU || session_params.device.type == DEVICE_OPENMP;
+ 	SceneParams scene_params = BlenderSync::get_scene_params(b_scene, background, is_cpu);
+ 
+ 	width = render_resolution_x(b_render);
+@@ -796,7 +796,7 @@
+ 
+ 	/* on session/scene parameter changes, we recreate session entirely */
+ 	SessionParams session_params = BlenderSync::get_session_params(b_engine, b_userpref, b_scene, background);
+-	const bool is_cpu = session_params.device.type == DEVICE_CPU;
++	const bool is_cpu = session_params.device.type == DEVICE_CPU || session_params.device.type == DEVICE_OPENMP;
+ 	SceneParams scene_params = BlenderSync::get_scene_params(b_scene, background, is_cpu);
+ 	bool session_pause = BlenderSync::get_session_pause(b_scene, background);
+ 
+diff --git a/intern/cycles/blender/blender_sync.cpp b/intern/cycles/blender/blender_sync.cpp
+--- a/intern/cycles/blender/blender_sync.cpp
++++ b/intern/cycles/blender/blender_sync.cpp
+@@ -528,7 +528,7 @@
+ 		params.texture_limit = 0;
+ 	}
+ 
+-#if !(defined(__GNUC__) && (defined(i386) || defined(_M_IX86)))
++#if !(defined(__GNUC__) && (defined(i386) || defined(_M_IX86))) && !defined(__INTEL_COMPILER)
+ 	if(is_cpu) {
+ 		params.use_qbvh = DebugFlags().cpu.qbvh && system_cpu_support_sse2();
+ 	}
+diff --git a/intern/cycles/device/CMakeLists.txt b/intern/cycles/device/CMakeLists.txt
+--- a/intern/cycles/device/CMakeLists.txt
++++ b/intern/cycles/device/CMakeLists.txt
+@@ -29,6 +29,7 @@
+ 	device_opencl.cpp
+ 	device_split_kernel.cpp
+ 	device_task.cpp
++	device_openmp.cpp
+ )
+ 
+ set(SRC_OPENCL
+@@ -68,6 +69,9 @@
+ if(WITH_CYCLES_DEVICE_MULTI)
+ 	add_definitions(-DWITH_MULTI)
+ endif()
++if(WITH_CYCLES_DEVICE_OPENMP)
++	add_definitions(-DWITH_OPENMP)
++endif()
+ 
+ include_directories(${INC})
+ include_directories(SYSTEM ${INC_SYS})
+diff --git a/intern/cycles/device/device.h b/intern/cycles/device/device.h
+--- a/intern/cycles/device/device.h
++++ b/intern/cycles/device/device.h
+@@ -40,6 +40,7 @@
+ 	DEVICE_NONE,
+ 	DEVICE_CPU,
+ 	DEVICE_OPENCL,
++	DEVICE_OPENMP,
+ 	DEVICE_CUDA,
+ 	DEVICE_NETWORK,
+ 	DEVICE_MULTI
+diff --git a/intern/cycles/device/device.cpp b/intern/cycles/device/device.cpp
+--- a/intern/cycles/device/device.cpp
++++ b/intern/cycles/device/device.cpp
+@@ -251,6 +251,11 @@
+ 				device = NULL;
+ 			break;
+ #endif
++#ifdef WITH_OPENMP
++		case DEVICE_OPENMP:
++			device = device_openmp_create(info, stats, background);
++			break;
++#endif
+ 		default:
+ 			return NULL;
+ 	}
+@@ -270,6 +275,8 @@
+ 		return DEVICE_NETWORK;
+ 	else if(strcmp(name, "MULTI") == 0)
+ 		return DEVICE_MULTI;
++	else if(strcmp(name, "OPENMP") == 0)
++		return DEVICE_OPENMP;
+ 
+ 	return DEVICE_NONE;
+ }
+@@ -286,6 +293,8 @@
+ 		return "NETWORK";
+ 	else if(type == DEVICE_MULTI)
+ 		return "MULTI";
++	else if(type == DEVICE_OPENMP)
++		return "OPENMP";
+ 
+ 	return "";
+ }
+@@ -306,6 +315,10 @@
+ 			types.push_back(DEVICE_OPENCL);
+ #endif
+ 
++#ifdef WITH_OPENMP
++		types.push_back(DEVICE_OPENMP);
++#endif
++
+ #ifdef WITH_NETWORK
+ 		types.push_back(DEVICE_NETWORK);
+ #endif
+@@ -330,6 +343,10 @@
+ 			device_opencl_info(devices);
+ #endif
+ 
++#ifdef WITH_OPENMP
++		device_openmp_info(devices);
++#endif
++
+ 		device_cpu_info(devices);
+ 
+ #ifdef WITH_NETWORK
+diff --git a/intern/cycles/device/device_intern.h b/intern/cycles/device/device_intern.h
+--- a/intern/cycles/device/device_intern.h
++++ b/intern/cycles/device/device_intern.h
+@@ -28,15 +28,18 @@
+ Device *device_cuda_create(DeviceInfo& info, Stats &stats, bool background);
+ Device *device_network_create(DeviceInfo& info, Stats &stats, const char *address);
+ Device *device_multi_create(DeviceInfo& info, Stats &stats, bool background);
++Device *device_openmp_create(DeviceInfo& info, Stats &stats, bool background);
+ 
+ void device_cpu_info(vector<DeviceInfo>& devices);
+ void device_opencl_info(vector<DeviceInfo>& devices);
+ void device_cuda_info(vector<DeviceInfo>& devices);
+ void device_network_info(vector<DeviceInfo>& devices);
++void device_openmp_info(vector<DeviceInfo>& devices);
+ 
+ string device_cpu_capabilities(void);
+ string device_opencl_capabilities(void);
+ string device_cuda_capabilities(void);
++string device_openmp_capabilities(void);
+ 
+ CCL_NAMESPACE_END
+ 
+diff --git a/intern/cycles/device/device_openmp.cpp b/intern/cycles/device/device_openmp.cpp
+new file mode 100644
+--- /dev/null
++++ b/intern/cycles/device/device_openmp.cpp
+@@ -0,0 +1,820 @@
++/*
++ * Copyright 2011-2013 Blender Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * Contributors: 2016 Milan Jaros (milan.jaros@vsb.cz)
++ *
++ */
++
++#include <stdlib.h>
++#include <string.h>
++
++/* So ImathMath is included before our kernel_cpu_compat. */
++#ifdef WITH_OSL
++/* So no context pollution happens from indirectly included windows.h */
++#    include "util_windows.h"
++#    include <OSL/oslexec.h>
++#endif
++
++#include "device/device.h"
++#include "device/device_intern.h"
++#include "device/device_split_kernel.h"
++
++#include "kernel/kernel.h"
++#include "kernel/kernel_compat_cpu.h"
++#include "kernel/kernel_types.h"
++#include "kernel/split/kernel_split_data.h"
++#include "kernel/kernel_globals.h"
++
++#include "kernel/osl/osl_shader.h"
++#include "kernel/osl/osl_globals.h"
++
++#include "render/buffers.h"
++
++#include "util/util_debug.h"
++#include "util/util_foreach.h"
++#include "util/util_function.h"
++#include "util/util_logging.h"
++#include "util/util_map.h"
++#include "util/util_opengl.h"
++#include "util/util_progress.h"
++#include "util/util_system.h"
++#include "util/util_thread.h"
++
++#include <omp.h>
++#define DEVICE_OPENMP_CPU -1
++
++#include "kernel/kernels/offload/kernel_offload.h"
++
++CCL_NAMESPACE_BEGIN
++
++class OpenMPDeviceCPU : public Device
++{
++public:
++	TaskPool task_pool;
++	KernelGlobals kernel_globals;
++
++#ifdef WITH_OSL
++	OSLGlobals osl_globals;
++#endif
++
++	OpenMPDeviceCPU(DeviceInfo& info, Stats &stats, bool background)
++	: Device(info, stats, background)
++	{
++#ifdef WITH_OSL
++		kernel_globals.osl = &osl_globals;
++#endif
++
++		/* do now to avoid thread issues */
++		system_cpu_support_sse2();
++		system_cpu_support_sse3();
++		system_cpu_support_sse41();
++		system_cpu_support_avx();
++		system_cpu_support_avx2();
++
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX2
++		if (system_cpu_support_avx2()) {
++			VLOG(1) << "Will be using AVX2 kernels.";
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX
++			if (system_cpu_support_avx()) {
++			VLOG(1) << "Will be using AVX kernels.";
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE41
++			if (system_cpu_support_sse41()) {
++			VLOG(1) << "Will be using SSE4.1 kernels.";
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE3
++			if (system_cpu_support_sse3()) {
++			VLOG(1) << "Will be using SSE3kernels.";
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE2
++			if (system_cpu_support_sse2()) {
++			VLOG(1) << "Will be using SSE2 kernels.";
++		}
++		else
++#endif
++		{
++			VLOG(1) << "Will be using regular kernels.";
++		}
++	}
++
++	~OpenMPDeviceCPU()
++	{
++		task_pool.stop();
++	}
++
++	virtual bool show_samples() const
++	{
++		return true;
++	}
++
++	void mem_alloc(const char *name, device_memory& mem, MemoryType /*type*/)
++	{
++		mem.device_pointer = mem.data_pointer;
++		mem.device_size = mem.memory_size();
++		stats.mem_alloc(mem.device_size);
++	}
++
++	void mem_copy_to(device_memory& /*mem*/)
++	{
++		/* no-op */
++	}
++
++	void mem_copy_from(device_memory& /*mem*/,
++			int /*y*/, int /*w*/, int /*h*/,
++			int /*elem*/)
++	{
++		/* no-op */
++	}
++
++	void mem_zero(device_memory& mem)
++	{
++		memset((void*)mem.device_pointer, 0, mem.memory_size());
++	}
++
++	void mem_free(device_memory& mem)
++	{
++		if (mem.device_pointer) {
++			mem.device_pointer = 0;
++			stats.mem_free(mem.device_size);
++			mem.device_size = 0;
++		}
++	}
++
++	void const_copy_to(const char *name, void *host, size_t size)
++	{
++		kernel_const_copy(&kernel_globals, name, host, size);
++	}
++
++	void tex_alloc(const char *name,
++			device_memory& mem,
++			InterpolationType interpolation,
++			ExtensionType extension)
++	{
++		VLOG(1) << "Texture allocate: " << name << ", "
++				<< string_human_readable_number(mem.memory_size()) << " bytes. ("
++				<< string_human_readable_size(mem.memory_size()) << ")";
++		kernel_tex_copy(&kernel_globals,
++				name,
++				mem.data_pointer,
++				mem.data_width,
++				mem.data_height,
++				mem.data_depth,
++				interpolation,
++				extension);
++		mem.device_pointer = mem.data_pointer;
++		mem.device_size = mem.memory_size();
++		stats.mem_alloc(mem.device_size);
++	}
++
++	void tex_free(device_memory& mem)
++	{
++		if (mem.device_pointer) {
++			mem.device_pointer = 0;
++			stats.mem_free(mem.device_size);
++			mem.device_size = 0;
++		}
++	}
++
++	void *osl_memory()
++	{
++#ifdef WITH_OSL
++		return &osl_globals;
++#else
++		return NULL;
++#endif
++	}
++
++	void thread_run(DeviceTask *task)
++	{
++		if (task->type == DeviceTask::PATH_TRACE)
++			thread_path_trace(*task);
++		else if (task->type == DeviceTask::FILM_CONVERT)
++			thread_film_convert(*task);
++		else if (task->type == DeviceTask::SHADER)
++			thread_shader(*task);
++	}
++
++	class OpenMPDeviceCPUTask : public DeviceTask
++	{
++	public:
++
++		OpenMPDeviceCPUTask(OpenMPDeviceCPU *device, DeviceTask& task)
++		: DeviceTask(task)
++		{
++			run = function_bind(&OpenMPDeviceCPU::thread_run, device, this);
++		}
++	} ;
++
++	void thread_path_trace(DeviceTask& task)
++	{
++		if (task_pool.canceled()) {
++			if (task.need_finish_queue == false)
++				return;
++		}
++
++		KernelGlobals kg = thread_kernel_globals_init();
++		RenderTile tile;
++
++		void(*path_trace_kernel)(KernelGlobals*, float*, unsigned int*, int, int, int, int, int);
++
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX2
++		if (system_cpu_support_avx2()) {
++			printf("system_cpu_support_avx2()\n");
++			path_trace_kernel = kernel_cpu_avx2_path_trace;
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX
++			if (system_cpu_support_avx()) {
++			path_trace_kernel = kernel_cpu_avx_path_trace;
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE41
++			if (system_cpu_support_sse41()) {
++			path_trace_kernel = kernel_cpu_sse41_path_trace;
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE3
++			if (system_cpu_support_sse3()) {
++			path_trace_kernel = kernel_cpu_sse3_path_trace;
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE2
++			if (system_cpu_support_sse2()) {
++			path_trace_kernel = kernel_cpu_sse2_path_trace;
++		}
++		else
++#endif
++		{
++			path_trace_kernel = kernel_cpu_path_trace;
++		}
++
++		omp_set_nested(1);
++
++		while (task.acquire_tile(this, tile)) {
++			float *render_buffer = (float*)tile.buffer;
++			uint *rng_state = (uint*)tile.rng_state;
++			int start_sample = tile.start_sample;
++			int end_sample = tile.start_sample + tile.num_samples;
++
++			int tile_size = tile.h * tile.w;
++
++#pragma omp parallel for schedule(dynamic, 1) num_threads(TaskScheduler::num_threads())
++			for (int i = 0; i < tile_size; i++) {
++				int y = i / tile.w;
++				int x = i - y * tile.w;
++
++				for (int sample = start_sample; sample < end_sample; sample++)
++					path_trace_kernel(&kg, render_buffer, rng_state,
++						sample, x + tile.x, y + tile.y, tile.offset, tile.stride);
++			}
++
++			tile.sample = end_sample;
++			task.update_progress(&tile, tile.num_samples * tile.w * tile.h);
++			task.release_tile(tile);
++
++			if (task_pool.canceled()) {
++				if (task.need_finish_queue == false)
++					break;
++			}
++		}
++
++
++		thread_kernel_globals_free(&kg);
++	}
++
++	void thread_film_convert(DeviceTask& task)
++	{
++		float sample_scale = 1.0f / (task.sample + 1);
++
++		if (task.rgba_half) {
++			void(*convert_to_half_float_kernel)(KernelGlobals *, uchar4 *, float *, float, int, int, int, int);
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX2
++			if (system_cpu_support_avx2()) {
++				convert_to_half_float_kernel = kernel_cpu_avx2_convert_to_half_float;
++			}
++			else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX
++				if (system_cpu_support_avx()) {
++				convert_to_half_float_kernel = kernel_cpu_avx_convert_to_half_float;
++			}
++			else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE41
++				if (system_cpu_support_sse41()) {
++				convert_to_half_float_kernel = kernel_cpu_sse41_convert_to_half_float;
++			}
++			else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE3
++				if (system_cpu_support_sse3()) {
++				convert_to_half_float_kernel = kernel_cpu_sse3_convert_to_half_float;
++			}
++			else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE2
++				if (system_cpu_support_sse2()) {
++				convert_to_half_float_kernel = kernel_cpu_sse2_convert_to_half_float;
++			}
++			else
++#endif
++			{
++				convert_to_half_float_kernel = kernel_cpu_convert_to_half_float;
++			}
++
++			int task_size = task.h * task.w;
++
++#pragma omp parallel for num_threads(TaskScheduler::num_threads())
++			for (int i = 0; i < task_size; i++) {
++				int y = i / task.w;
++				int x = i - y * task.w;
++
++				convert_to_half_float_kernel(&kernel_globals, (uchar4*)task.rgba_half, (float*)task.buffer,
++						sample_scale, x + task.x, y + task.y, task.offset, task.stride);
++			}
++		}
++		else {
++			void(*convert_to_byte_kernel)(KernelGlobals *, uchar4 *, float *, float, int, int, int, int);
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX2
++			if (system_cpu_support_avx2()) {
++				convert_to_byte_kernel = kernel_cpu_avx2_convert_to_byte;
++			}
++			else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX
++				if (system_cpu_support_avx()) {
++				convert_to_byte_kernel = kernel_cpu_avx_convert_to_byte;
++			}
++			else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE41
++				if (system_cpu_support_sse41()) {
++				convert_to_byte_kernel = kernel_cpu_sse41_convert_to_byte;
++			}
++			else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE3
++				if (system_cpu_support_sse3()) {
++				convert_to_byte_kernel = kernel_cpu_sse3_convert_to_byte;
++			}
++			else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE2
++				if (system_cpu_support_sse2()) {
++				convert_to_byte_kernel = kernel_cpu_sse2_convert_to_byte;
++			}
++			else
++#endif
++			{
++				convert_to_byte_kernel = kernel_cpu_convert_to_byte;
++			}
++
++			int task_size = task.h * task.w;
++
++#pragma omp parallel for num_threads(TaskScheduler::num_threads())
++			for (int i = 0; i < task_size; i++) {
++				int y = i / task.w;
++				int x = i - y * task.w;
++
++				convert_to_byte_kernel(&kernel_globals, (uchar4*)task.rgba_byte, (float*)task.buffer,
++						sample_scale, x + task.x, y + task.y, task.offset, task.stride);
++
++			}
++		}
++	}
++
++	void thread_shader(DeviceTask& task)
++	{
++		KernelGlobals kg = kernel_globals;
++
++#ifdef WITH_OSL
++		OSLShader::thread_init(&kg, &kernel_globals, &osl_globals);
++#endif
++		void(*shader_kernel)(KernelGlobals*, uint4*, float4*, float*, int, int, int, int, int);
++
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX2
++		if (system_cpu_support_avx2()) {
++			shader_kernel = kernel_cpu_avx2_shader;
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX
++			if (system_cpu_support_avx()) {
++			shader_kernel = kernel_cpu_avx_shader;
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE41
++			if (system_cpu_support_sse41()) {
++			shader_kernel = kernel_cpu_sse41_shader;
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE3
++			if (system_cpu_support_sse3()) {
++			shader_kernel = kernel_cpu_sse3_shader;
++		}
++		else
++#endif
++#ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE2
++			if (system_cpu_support_sse2()) {
++			shader_kernel = kernel_cpu_sse2_shader;
++		}
++		else
++#endif
++		{
++			shader_kernel = kernel_cpu_shader;
++		}
++
++		for (int sample = 0; sample < task.num_samples; sample++) {
++
++#pragma omp parallel for schedule(dynamic, 1) num_threads(TaskScheduler::num_threads())
++			for (int x = task.shader_x; x < task.shader_x + task.shader_w; x++)
++				shader_kernel(&kg,
++					(uint4*)task.shader_input,
++					(float4*)task.shader_output,
++					(float*)task.shader_output_luma,
++					task.shader_eval_type,
++					task.shader_filter,
++					x,
++					task.offset,
++					sample);
++
++			if (task.get_cancel() || task_pool.canceled())
++				break;
++
++			task.update_progress(NULL);
++
++		}
++
++#ifdef WITH_OSL
++		OSLShader::thread_free(&kg);
++#endif
++	}
++
++	int get_split_task_count(DeviceTask& /*task*/)
++	{
++		return 1;
++	}
++
++	void task_add(DeviceTask& task)
++	{
++		task_pool.push(new OpenMPDeviceCPUTask(this, task));
++	}
++
++	void task_wait()
++	{
++		task_pool.wait_work();
++	}
++
++	void task_cancel()
++	{
++		task_pool.cancel();
++	}
++
++protected:
++
++	inline KernelGlobals thread_kernel_globals_init()
++	{
++		KernelGlobals kg = kernel_globals;
++		kg.transparent_shadow_intersections = NULL;
++		const int decoupled_count = sizeof (kg.decoupled_volume_steps) /
++				sizeof (*kg.decoupled_volume_steps);
++		for (int i = 0; i < decoupled_count; ++i) {
++			kg.decoupled_volume_steps[i] = NULL;
++		}
++		kg.decoupled_volume_steps_index = 0;
++#ifdef WITH_OSL
++		OSLShader::thread_init(&kg, &kernel_globals, &osl_globals);
++#endif
++		return kg;
++	}
++
++	inline void thread_kernel_globals_free(KernelGlobals *kg)
++	{
++		if (kg->transparent_shadow_intersections != NULL) {
++			free(kg->transparent_shadow_intersections);
++		}
++		const int decoupled_count = sizeof (kg->decoupled_volume_steps) /
++				sizeof (*kg->decoupled_volume_steps);
++		for (int i = 0; i < decoupled_count; ++i) {
++			if (kg->decoupled_volume_steps[i] != NULL) {
++				free(kg->decoupled_volume_steps[i]);
++			}
++		}
++#ifdef WITH_OSL
++		OSLShader::thread_free(kg);
++#endif
++	}
++} ;
++
++class OpenMPDeviceOffload : public Device
++{
++public:
++	DedicatedTaskPool task_pool;
++	device_ptr kernel_globals;
++
++	OpenMPDeviceOffload(DeviceInfo& info, Stats &stats, bool background)
++	: Device(info, stats, background)
++	{
++		kernel_globals = offload_alloc_kg(info.num);
++	}
++
++	~OpenMPDeviceOffload()
++	{
++		offload_free_kg(info.num, kernel_globals);
++		task_pool.stop();
++	}
++
++	virtual bool show_samples() const
++	{
++		return true;
++	}
++
++	void mem_alloc(const char *name, device_memory& mem, MemoryType /*type*/)
++	{
++		mem.device_pointer = offload_mem_alloc(info.num, mem.data_pointer, mem.memory_size());
++
++		mem.device_size = mem.memory_size();
++		stats.mem_alloc(mem.device_size);
++	}
++
++	void mem_copy_to(device_memory& mem)
++	{
++		if (mem.device_pointer)
++			offload_mem_copy_to(info.num, (char*) mem.data_pointer, mem.device_pointer, mem.device_size);
++	}
++
++	void mem_copy_from(device_memory& mem,
++			int y, int w, int h,
++			int elem)
++	{
++		size_t offset = elem * y*w;
++		size_t size = elem * w*h;
++
++		if (mem.device_pointer)
++			offload_mem_copy_from(info.num, mem.device_pointer, (char*) mem.data_pointer, offset, size);
++	}
++
++	void mem_zero(device_memory& mem)
++	{
++		if (mem.device_pointer)
++			offload_mem_zero(info.num, mem.device_pointer, mem.device_size);
++	}
++
++	void mem_free(device_memory& mem)
++	{
++		if (mem.device_pointer) {
++			offload_mem_free(info.num, mem.device_pointer, mem.device_size);
++
++			mem.device_pointer = 0;
++			stats.mem_free(mem.device_size);
++			mem.device_size = 0;
++		}
++	}
++
++	void const_copy_to(const char *name, void *host, size_t size)
++	{
++		offload_const_copy(info.num, kernel_globals, name, (char*) host, size);
++	}
++
++	void tex_alloc(const char *name,
++			device_memory& mem,
++			InterpolationType interpolation,
++			ExtensionType extension)
++	{
++		VLOG(1) << "Texture allocate: " << name << ", "
++				<< string_human_readable_number(mem.memory_size()) << " bytes. ("
++				<< string_human_readable_size(mem.memory_size()) << ")";
++
++		mem.device_pointer = offload_tex_copy(
++				info.num,
++				kernel_globals,
++				name,
++				(char*) mem.data_pointer,
++				mem.memory_size(),
++				mem.data_width,
++				mem.data_height,
++				mem.data_depth,
++				interpolation,
++				(int) extension);
++
++		mem.device_size = mem.memory_size();
++		stats.mem_alloc(mem.device_size);
++	}
++
++	void tex_free(device_memory& mem)
++	{
++		if (mem.device_pointer) {
++			offload_tex_free(info.num, kernel_globals, mem.device_pointer, mem.device_size);
++
++			mem.device_pointer = 0;
++			stats.mem_free(mem.device_size);
++			mem.device_size = 0;
++		}
++	}
++
++	void *osl_memory()
++	{
++		return NULL;
++	}
++
++	void thread_run(DeviceTask *task)
++	{
++		if (task->type == DeviceTask::PATH_TRACE)
++			thread_path_trace(*task);
++		else if (task->type == DeviceTask::FILM_CONVERT)
++			thread_film_convert(*task);
++		else if (task->type == DeviceTask::SHADER)
++			thread_shader(*task);
++	}
++
++	class OpenMPDeviceOffloadTask : public DeviceTask
++	{
++	public:
++
++		OpenMPDeviceOffloadTask(OpenMPDeviceOffload *device, DeviceTask& task)
++		: DeviceTask(task)
++		{
++			run = function_bind(&OpenMPDeviceOffload::thread_run, device, this);
++		}
++	} ;
++
++	void thread_path_trace(DeviceTask& task)
++	{
++		if (task_pool.canceled()) {
++			if (task.need_finish_queue == false)
++				return;
++		}
++
++		offload_kernel_globals_init(info.num, kernel_globals);
++
++		RenderTile tile;
++
++		while (task.acquire_tile(this, tile)) {
++			float *render_buffer = (float*) tile.buffer;
++			uint *rng_state = (uint*) tile.rng_state;
++			int start_sample = tile.start_sample;
++			int end_sample = tile.start_sample + tile.num_samples;
++
++			offload_path_trace(info.num, kernel_globals,
++					tile.buffer, tile.rng_state, start_sample, end_sample,
++					tile.x, tile.y, tile.offset, tile.stride,
++					tile.h, tile.w);
++
++			tile.sample = end_sample;
++			task.update_progress(&tile, tile.num_samples * tile.w * tile.h);
++			task.release_tile(tile);
++
++			if (task_pool.canceled()) {
++				if (task.need_finish_queue == false)
++					break;
++			}
++		}
++
++		offload_kernel_globals_free(info.num, kernel_globals);
++	}
++
++	void thread_film_convert(DeviceTask& task)
++	{
++		float sample_scale = 1.0f / (task.sample + 1);
++
++		if (task.rgba_half) {
++			offload_convert_to_half_float_kernel(info.num, kernel_globals,
++					task.rgba_half, task.buffer, sample_scale, task.x, task.y,
++					task.offset, task.stride, task.h, task.w);
++		}
++		else {
++			offload_convert_to_byte_kernel(info.num, kernel_globals,
++					task.rgba_byte, task.buffer, sample_scale, task.x,
++					task.y, task.offset, task.stride, task.h, task.w);
++		}
++	}
++
++	void thread_shader(DeviceTask& task)
++	{
++		for (int sample = 0; sample < task.num_samples; sample++) {
++			offload_shader_kernel(
++					info.num, kernel_globals,
++					task.shader_input,
++					task.shader_output,
++					task.shader_output_luma,
++					task.shader_eval_type,
++					task.shader_filter,
++					task.shader_x,
++					task.shader_w,
++					task.offset,
++					sample);
++
++			if (task.get_cancel() || task_pool.canceled())
++				break;
++
++			task.update_progress(NULL);
++		}
++	}
++
++	int get_split_task_count(DeviceTask& task)
++	{
++		return 1;
++	}
++
++	void task_add(DeviceTask& task)
++	{
++		task_pool.push(new OpenMPDeviceOffloadTask(this, task));
++	}
++
++	void task_wait()
++	{
++		task_pool.wait();
++	}
++
++	void task_cancel()
++	{
++		task_pool.cancel();
++	}
++} ;
++
++Device * device_openmp_create(DeviceInfo& info, Stats &stats, bool background)
++{
++	if (info.num != DEVICE_OPENMP_CPU)
++		return new OpenMPDeviceOffload(info, stats, background);
++	else
++		return new OpenMPDeviceCPU(info, stats, background);
++	//TODO(Jaros): add GPU devices
++}
++
++void device_openmp_info(vector<DeviceInfo>& devices)
++{
++	DeviceInfo info;
++
++	info.type = DEVICE_OPENMP;
++	info.description = system_cpu_brand_string();
++	info.id = "OPENMP_CPU";
++	info.num = DEVICE_OPENMP_CPU;
++	info.advanced_shading = true;
++	info.pack_images = false;
++
++	devices.insert(devices.begin(), info);
++
++	int offloadDevices = offload_devices();
++
++	if (offloadDevices > 0) {
++		for (int i = 0; i < offloadDevices; i++) {
++			DeviceInfo infoOffload;
++
++			infoOffload.type = DEVICE_OPENMP;
++			infoOffload.description = string_printf("mic%d", i);
++			infoOffload.id = string_printf("OPENMP_MIC_%d", i);
++			infoOffload.num = i;
++			infoOffload.advanced_shading = true;
++			infoOffload.pack_images = false;
++
++			devices.insert(devices.begin(), infoOffload);
++		}
++	}
++}
++
++string device_openmp_capabilities(void)
++{
++	string capabilities = "";
++	capabilities += system_cpu_support_sse2() ? "SSE2 " : "";
++	capabilities += system_cpu_support_sse3() ? "SSE3 " : "";
++	capabilities += system_cpu_support_sse41() ? "SSE41 " : "";
++	capabilities += system_cpu_support_avx() ? "AVX " : "";
++	capabilities += system_cpu_support_avx2() ? "AVX2" : "";
++
++	if (offload_devices() > 0) {
++		capabilities += "OFFLOAD";
++	}
++
++	if (capabilities[capabilities.size() - 1] == ' ')
++		capabilities.resize(capabilities.size() - 1);
++	return capabilities;
++}
++
++CCL_NAMESPACE_END
+diff --git a/intern/cycles/kernel/CMakeLists.txt b/intern/cycles/kernel/CMakeLists.txt
+--- a/intern/cycles/kernel/CMakeLists.txt
++++ b/intern/cycles/kernel/CMakeLists.txt
+@@ -386,6 +386,16 @@
+ 	set_source_files_properties(kernels/cpu/kernel_split_avx2.cpp PROPERTIES COMPILE_FLAGS "${CYCLES_AVX2_KERNEL_FLAGS}")
+ endif()
+ 
++if(WITH_CYCLES_DEVICE_OPENMP)
++	list(APPEND SRC_HEADERS
++		kernels/offload/kernel_offload.h
++	)
++
++	list(APPEND SRC
++		kernels/offload/kernel_offload.cpp
++	)
++endif()
++
+ add_library(cycles_kernel
+ 	${SRC}
+ 	${SRC_HEADERS}
+diff --git a/intern/cycles/kernel/kernels/cpu/kernel.cpp b/intern/cycles/kernel/kernels/cpu/kernel.cpp
+--- a/intern/cycles/kernel/kernels/cpu/kernel.cpp
++++ b/intern/cycles/kernel/kernels/cpu/kernel.cpp
+@@ -19,7 +19,7 @@
+ /* On x86-64, we can assume SSE2, so avoid the extra kernel and compile this
+  * one with SSE2 intrinsics.
+  */
+-#if defined(__x86_64__) || defined(_M_X64)
++#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__INTEL_COMPILER)
+ #  define __KERNEL_SSE2__
+ #endif
+ 
+diff --git a/intern/cycles/kernel/kernels/offload/kernel_offload.h b/intern/cycles/kernel/kernels/offload/kernel_offload.h
+new file mode 100644
+--- /dev/null
++++ b/intern/cycles/kernel/kernels/offload/kernel_offload.h
+@@ -0,0 +1,107 @@
++/*
++ * Copyright 2011-2013 Blender Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * Contributors: 2016 Milan Jaros (milan.jaros@vsb.cz)
++ *
++ */
++
++#ifndef __KERNEL_OFFLOAD_H__
++#define __KERNEL_OFFLOAD_H__
++
++#define DEVICE_PTR unsigned long long
++#define SIZE_T long
++
++CCL_NAMESPACE_BEGIN
++
++void offload_path_trace(int numDevice,
++	DEVICE_PTR kg_bin,
++	DEVICE_PTR buffer_bin,
++	DEVICE_PTR rng_state_bin,
++	int start_sample,int end_sample,
++	int tile_x,
++	int tile_y,
++	int offset,
++	int stride,
++	int tile_h,
++	int tile_w);
++
++void offload_convert_to_half_float_kernel(int numDevice,
++	DEVICE_PTR kg_bin,
++	DEVICE_PTR rgba_half_bin,
++	DEVICE_PTR buffer_bin,
++	float sample_scale,
++	int task_x,
++	int task_y,
++	int task_offset,
++	int task_stride,
++	int task_h,
++	int task_w);
++
++void offload_convert_to_byte_kernel(int numDevice,
++	DEVICE_PTR kg_bin,
++	DEVICE_PTR rgba_byte_bin,
++	DEVICE_PTR buffer_bin,
++	float sample_scale,
++	int task_x,
++	int task_y,
++	int task_offset,
++	int task_stride,
++	int task_h,
++	int task_w);
++
++void offload_shader_kernel(int numDevice,
++	DEVICE_PTR kg_bin,
++	DEVICE_PTR shader_input_bin,
++	DEVICE_PTR shader_output_bin,
++	DEVICE_PTR shader_output_luma,
++	int task_shader_eval_type,
++	int task_shader_filter,
++	int task_shader_x,
++	int task_shader_w,
++	int task_offset,
++	int sample);
++
++DEVICE_PTR offload_alloc_kg(int numDevice);
++void offload_free_kg(int numDevice, DEVICE_PTR kg);
++
++DEVICE_PTR offload_mem_alloc(int numDevice, DEVICE_PTR mem, SIZE_T memSize);
++void offload_mem_copy_to(int numDevice, char *memh, DEVICE_PTR mem, SIZE_T memSize);
++void offload_mem_copy_from(int numDevice, DEVICE_PTR mem, char *memh, SIZE_T offset, SIZE_T memSize);
++void offload_mem_zero(int numDevice, DEVICE_PTR mem, SIZE_T memSize);
++void offload_mem_free(int numDevice, DEVICE_PTR mem, SIZE_T memSize);
++
++void offload_const_copy(int numDevice, DEVICE_PTR kg, const char *name, char *host, SIZE_T size);
++
++DEVICE_PTR offload_tex_copy(int numDevice,
++	DEVICE_PTR kg_bin,
++	const char *name_bin,
++	char* mem,
++	SIZE_T size,
++	SIZE_T width,
++	SIZE_T height,
++	SIZE_T depth,
++	int interpolation,
++	int extension);
++
++void offload_tex_free(int numDevice, DEVICE_PTR kg_bin, DEVICE_PTR mem, SIZE_T memSize);
++
++void offload_kernel_globals_init(int numDevice, DEVICE_PTR kernel_globals);
++void offload_kernel_globals_free(int numDevice, DEVICE_PTR kernel_globals);
++
++int offload_devices();
++
++CCL_NAMESPACE_END
++
++#endif /* __KERNEL_OFFLOAD_H__ */
+\ No newline at end of file
+diff --git a/intern/cycles/kernel/kernels/offload/kernel_offload.cpp b/intern/cycles/kernel/kernels/offload/kernel_offload.cpp
+new file mode 100644
+--- /dev/null
++++ b/intern/cycles/kernel/kernels/offload/kernel_offload.cpp
+@@ -0,0 +1,457 @@
++/*
++ * Copyright 2011-2013 Blender Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * Contributors: 2016 Milan Jaros (milan.jaros@vsb.cz)
++ *
++ */
++
++/*
++ * The offload mode was tested with this settings:
++ * two KNC devices (2x Intel Xeon Phi 7120P), Linux, Intel compiler 2016.03.
++ *
++ * The KNC does not support SSE/AVX optimization. We disable it with #define __KERNEL_OFFLOAD__.
++ *
++ * We are not using the automatic Mapped variable method of offload mode (mapping of a variable
++ * in a data environment to a variable in a device data environment),
++ * because it is unstable in some cases:
++ *
++ * #define ALLOC alloc_if(1) free_if(0)
++ * #define FREE alloc_if(0) free_if(1)
++ * #define REUSE alloc_if(0) free_if(0)
++ * #define ONE_USE
++ *
++ */
++
++#define __KERNEL_OFFLOAD__
++
++//#include "util_debug.h"
++
++#include "kernel_offload.h"
++
++#pragma offload_attribute(push, target(mic))
++#	include "kernel/kernel.h"
++#	define KERNEL_ARCH offload
++#	include "../cpu/kernel_cpu_impl.h"
++#pragma offload_attribute(pop)
++
++#include <omp.h>
++
++CCL_NAMESPACE_BEGIN
++
++//DebugFlags DebugFlags::instance;
++
++void offload_path_trace(int numDevice,
++		DEVICE_PTR kg_bin,
++		DEVICE_PTR buffer_bin,
++		DEVICE_PTR rng_state_bin,
++		int start_sample,int end_sample,
++		int tile_x,
++		int tile_y,
++		int offset,
++		int stride,
++		int tile_h,
++		int tile_w)
++{
++#pragma offload target(mic:numDevice)
++	{
++		int tile_size = tile_h*tile_w;
++
++#pragma omp parallel for schedule(dynamic, 1)
++		for (int i = 0; i < tile_size; i++) {
++			int y = i / tile_w;
++			int x = i - y * tile_w;
++		for (int sample = start_sample; sample < end_sample; sample++)
++			kernel_offload_path_trace((KernelGlobals *) kg_bin,
++					(float *) buffer_bin, (unsigned int*) rng_state_bin,
++					sample, x + tile_x, y + tile_y, offset, stride);
++		}
++	}
++}
++
++void offload_convert_to_half_float_kernel(int numDevice,
++		DEVICE_PTR kg_bin,
++		DEVICE_PTR rgba_half_bin,
++		DEVICE_PTR buffer_bin,
++		float sample_scale,
++		int task_x,
++		int task_y,
++		int task_offset,
++		int task_stride,
++		int task_h,
++		int task_w)
++{
++#pragma offload target(mic:numDevice)
++	{
++		int task_size = task_h*task_w;
++
++#pragma omp parallel for schedule(dynamic, 1)
++		for (int i = 0; i < task_size; i++) {
++			int y = i / task_w;
++			int x = i - y * task_w;
++
++			kernel_offload_convert_to_half_float((KernelGlobals *) kg_bin,
++					(uchar4*) rgba_half_bin, (float*) buffer_bin,
++					sample_scale, x + task_x, y + task_y, task_offset, task_stride);
++		}
++	}
++}
++
++void offload_convert_to_byte_kernel(int numDevice,
++		DEVICE_PTR kg_bin,
++		DEVICE_PTR rgba_byte_bin,
++		DEVICE_PTR buffer_bin,
++		float sample_scale,
++		int task_x,
++		int task_y,
++		int task_offset,
++		int task_stride,
++		int task_h,
++		int task_w)
++{
++#pragma offload target(mic:numDevice)
++	{
++		int task_size = task_h*task_w;
++
++#pragma omp parallel for schedule(dynamic, 1)
++		for (int i = 0; i < task_size; i++) {
++			int y = i / task_w;
++			int x = i - y * task_w;
++
++			kernel_offload_convert_to_byte((KernelGlobals *) kg_bin,
++					(uchar4*) rgba_byte_bin, (float*) buffer_bin,
++					sample_scale, x + task_x, y + task_y, task_offset, task_stride);
++		}
++	}
++}
++
++void offload_shader_kernel(int numDevice,
++		DEVICE_PTR kg_bin,
++		DEVICE_PTR shader_input_bin,
++		DEVICE_PTR shader_output_bin,
++		DEVICE_PTR shader_output_luma,
++		int task_shader_eval_type,
++		int task_shader_filter,
++		int task_shader_x,
++		int task_shader_w,
++		int task_offset,
++		int sample)
++{
++#pragma offload target(mic:numDevice)
++	{
++#pragma omp parallel for schedule(dynamic, 1)
++		for (int x = task_shader_x; x < task_shader_x + task_shader_w; x++)
++			kernel_offload_shader((KernelGlobals *) kg_bin,
++				(uint4*) shader_input_bin, (float4*) shader_output_bin,
++				(float*) shader_output_luma, task_shader_eval_type,
++				task_shader_filter, x, task_offset, sample);
++	}
++}
++
++DEVICE_PTR offload_alloc_kg(int numDevice)
++{
++	DEVICE_PTR kg_bin = NULL;
++
++#pragma offload target(mic:numDevice) out(kg_bin)
++	{
++		KernelGlobals *kg = new KernelGlobals();
++		kg_bin = (DEVICE_PTR) kg;
++	}
++
++	return (DEVICE_PTR) kg_bin;
++}
++
++void offload_free_kg(int numDevice, DEVICE_PTR kg_bin)
++{
++#pragma offload target(mic:numDevice) in(kg_bin)
++	{
++		KernelGlobals *kg = (KernelGlobals *) kg_bin;
++		delete kg;
++	}
++}
++
++DEVICE_PTR offload_mem_alloc(int numDevice, DEVICE_PTR mem, SIZE_T memSize)
++{
++	DEVICE_PTR mem_device;
++
++#pragma offload target(mic:numDevice) out(mem_device)
++	{
++		mem_device = (DEVICE_PTR) new char[memSize];
++	}
++
++	return mem_device;
++}
++
++void offload_mem_copy_to(int numDevice, char *memh, DEVICE_PTR mem, SIZE_T memSize)
++{
++#pragma offload target(mic:numDevice) in(memh:length(memSize))
++	{
++		memcpy((char*) mem, memh, memSize);
++	}
++}
++
++void offload_mem_copy_from(int numDevice, DEVICE_PTR mem, char *memh, SIZE_T offset, SIZE_T memSize)
++{
++	char *temp = new char[memSize];
++
++#pragma offload target(mic:numDevice) out(temp:length(memSize))
++	{
++		memcpy(temp, (char*) mem + offset, memSize);
++	}
++
++	memcpy(memh + offset, temp, memSize);
++	delete[]temp;
++}
++
++void offload_mem_zero(int numDevice, DEVICE_PTR mem, SIZE_T memSize)
++{
++#pragma offload target(mic:numDevice)
++	{
++		memset((char*) mem, 0, memSize);
++	}
++}
++
++void offload_mem_free(int numDevice, DEVICE_PTR mem, SIZE_T memSize)
++{
++#pragma offload target(mic:numDevice)
++	{
++		delete[](char*) mem;
++	}
++}
++
++void offload_const_copy(int numDevice, DEVICE_PTR kg_bin, const char *name, char *host_bin, SIZE_T size)
++{
++	if (strcmp(name, "__data") == 0) {
++#pragma offload target(mic:numDevice) in(host_bin:length(size))
++		{
++			KernelGlobals *kg = (KernelGlobals *) kg_bin;
++			memcpy(&kg->__data, host_bin, size);
++		}
++	}
++}
++
++#pragma offload_attribute(push, target(mic))
++void offload_kernel_tex_copy_internal(KernelGlobals *kg,
++		const char *name,
++		device_ptr mem,
++		size_t width,
++		size_t height,
++		size_t depth,
++		InterpolationType interpolation,
++		ExtensionType extension)
++{
++	if (0) {
++	}
++
++#define KERNEL_TEX(type, ttype, tname) \
++	else if(strcmp(name, #tname) == 0) { \
++		kg->tname.data = (type*)mem; \
++		kg->tname.width = width; \
++	}
++#define KERNEL_IMAGE_TEX(type, ttype, tname)
++#include "kernel/kernel_textures.h"
++
++	else if (strstr(name, "__tex_image_float4")) {
++		texture_image_float4 *tex = NULL;
++		int id = atoi(name + strlen("__tex_image_float4_"));
++		int array_index = id;
++
++		if (array_index >= 0 && array_index < TEX_NUM_FLOAT4_CPU) {
++			tex = &kg->texture_float4_images[array_index];
++		}
++
++		if (tex) {
++			tex->data = (float4*)mem;
++			tex->dimensions_set(width, height, depth);
++			tex->interpolation = interpolation;
++			tex->extension = extension;
++		}
++	}
++	else if (strstr(name, "__tex_image_float")) {
++		texture_image_float *tex = NULL;
++		int id = atoi(name + strlen("__tex_image_float_"));
++		int array_index = id - TEX_START_FLOAT_CPU;
++
++		if (array_index >= 0 && array_index < TEX_NUM_FLOAT_CPU) {
++			tex = &kg->texture_float_images[array_index];
++		}
++
++		if (tex) {
++			tex->data = (float*)mem;
++			tex->dimensions_set(width, height, depth);
++			tex->interpolation = interpolation;
++			tex->extension = extension;
++		}
++	}
++	else if (strstr(name, "__tex_image_byte4")) {
++		texture_image_uchar4 *tex = NULL;
++		int id = atoi(name + strlen("__tex_image_byte4_"));
++		int array_index = id - TEX_START_BYTE4_CPU;
++
++		if (array_index >= 0 && array_index < TEX_NUM_BYTE4_CPU) {
++			tex = &kg->texture_byte4_images[array_index];
++		}
++
++		if (tex) {
++			tex->data = (uchar4*)mem;
++			tex->dimensions_set(width, height, depth);
++			tex->interpolation = interpolation;
++			tex->extension = extension;
++		}
++	}
++	else if (strstr(name, "__tex_image_byte")) {
++		texture_image_uchar *tex = NULL;
++		int id = atoi(name + strlen("__tex_image_byte_"));
++		int array_index = id - TEX_START_BYTE_CPU;
++
++		if (array_index >= 0 && array_index < TEX_NUM_BYTE_CPU) {
++			tex = &kg->texture_byte_images[array_index];
++		}
++
++		if (tex) {
++			tex->data = (uchar*)mem;
++			tex->dimensions_set(width, height, depth);
++			tex->interpolation = interpolation;
++			tex->extension = extension;
++		}
++	}
++	else if (strstr(name, "__tex_image_half4")) {
++		texture_image_half4 *tex = NULL;
++		int id = atoi(name + strlen("__tex_image_half4_"));
++		int array_index = id - TEX_START_HALF4_CPU;
++
++		if (array_index >= 0 && array_index < TEX_NUM_HALF4_CPU) {
++			tex = &kg->texture_half4_images[array_index];
++		}
++
++		if (tex) {
++			tex->data = (half4*)mem;
++			tex->dimensions_set(width, height, depth);
++			tex->interpolation = interpolation;
++			tex->extension = extension;
++		}
++	}
++	else if (strstr(name, "__tex_image_half")) {
++		texture_image_half *tex = NULL;
++		int id = atoi(name + strlen("__tex_image_half_"));
++		int array_index = id - TEX_START_HALF_CPU;
++
++		if (array_index >= 0 && array_index < TEX_NUM_HALF_CPU) {
++			tex = &kg->texture_half_images[array_index];
++		}
++
++		if (tex) {
++			tex->data = (half*)mem;
++			tex->dimensions_set(width, height, depth);
++			tex->interpolation = interpolation;
++			tex->extension = extension;
++		}
++	}
++	else
++		kernel_assert(0);
++}
++#pragma offload_attribute(pop)
++
++DEVICE_PTR offload_tex_copy(int numDevice,
++		DEVICE_PTR kg_bin,
++		const char *name_bin,
++		char* mem,
++		SIZE_T size,
++		SIZE_T width,
++		SIZE_T height,
++		SIZE_T depth,
++		int interpolation,
++		int extension)
++{
++	if (name_bin == NULL || mem == NULL)
++		return NULL;
++
++	SIZE_T nameSize = sizeof (char) * (strlen(name_bin) + 1);
++	char *name = (char *) name_bin;
++
++	DEVICE_PTR tex_mem_device = NULL;
++
++#pragma offload target(mic:numDevice) \
++            in(mem:length(size)) \
++            in(name:length(nameSize)) \
++            out(tex_mem_device)
++	{
++		char* tex_mem_bin = new char[size];
++		memcpy(tex_mem_bin, mem, size);
++
++		offload_kernel_tex_copy_internal((KernelGlobals*) kg_bin, name,
++				(DEVICE_PTR) tex_mem_bin, width, height, depth,
++				(InterpolationType) interpolation, (ExtensionType) extension);
++
++		tex_mem_device = (DEVICE_PTR) tex_mem_bin;
++	}
++
++	return tex_mem_device;
++}
++
++void offload_tex_free(int numDevice, DEVICE_PTR kg_bin, DEVICE_PTR mem, SIZE_T memSize)
++{
++	offload_mem_free(numDevice, mem, memSize);
++}
++
++void offload_kernel_globals_init(int numDevice, DEVICE_PTR kg_bin)
++{
++#pragma offload target(mic:numDevice) in(kg_bin)
++	{
++		KernelGlobals *kg = (KernelGlobals *) kg_bin;
++
++		kg->transparent_shadow_intersections = NULL;
++		const int decoupled_count = sizeof (kg->decoupled_volume_steps) /
++				sizeof (*kg->decoupled_volume_steps);
++		for (int i = 0; i < decoupled_count; ++i) {
++			kg->decoupled_volume_steps[i] = NULL;
++		}
++		kg->decoupled_volume_steps_index = 0;
++	}
++}
++
++void offload_kernel_globals_free(int numDevice, DEVICE_PTR kg_bin)
++{
++#pragma offload target(mic:numDevice) in(kg_bin)
++	{
++		KernelGlobals *kg = (KernelGlobals *) kg_bin;
++		if (kg->transparent_shadow_intersections != NULL) {
++			free(kg->transparent_shadow_intersections);
++		}
++		const int decoupled_count = sizeof (kg->decoupled_volume_steps) /
++				sizeof (*kg->decoupled_volume_steps);
++		for (int i = 0; i < decoupled_count; ++i) {
++			if (kg->decoupled_volume_steps[i] != NULL) {
++				free(kg->decoupled_volume_steps[i]);
++			}
++		}
++	}
++}
++
++int offload_devices()
++{
++#if _OPENMP >= 201307
++	return omp_get_num_devices();
++#else
++	const char *num = getenv("OMP_GET_NUM_DEVICES");
++	if (num) {
++		return atoi(num);
++	}
++	else {
++		return 0;
++	}
++#endif
++}
++
++CCL_NAMESPACE_END
+\ No newline at end of file
+diff --git a/intern/cycles/render/image.cpp b/intern/cycles/render/image.cpp
+--- a/intern/cycles/render/image.cpp
++++ b/intern/cycles/render/image.cpp
+@@ -65,7 +65,7 @@
+ 		tex_start_images[IMAGE_DATA_TYPE_HALF] = TEX_START_HALF_ ## ARCH; \
+ 	}
+ 
+-	if(device_type == DEVICE_CPU) {
++	if(device_type == DEVICE_CPU || device_type == DEVICE_OPENMP) {
+ 		SET_TEX_IMAGES_LIMITS(CPU);
+ 	}
+ 	else if(device_type == DEVICE_CUDA) {
+diff --git a/intern/cycles/render/scene.cpp b/intern/cycles/render/scene.cpp
+--- a/intern/cycles/render/scene.cpp
++++ b/intern/cycles/render/scene.cpp
+@@ -60,7 +60,7 @@
+ 	bake_manager = new BakeManager();
+ 
+ 	/* OSL only works on the CPU */
+-	if(device_info_.type == DEVICE_CPU)
++	if(device_info_.type == DEVICE_CPU || device_info_.type == DEVICE_OPENMP)
+ 		shader_manager = ShaderManager::create(this, params.shadingsystem);
+ 	else
+ 		shader_manager = ShaderManager::create(this, SHADINGSYSTEM_SVM);
+diff --git a/intern/cycles/render/session.cpp b/intern/cycles/render/session.cpp
+--- a/intern/cycles/render/session.cpp
++++ b/intern/cycles/render/session.cpp
+@@ -49,7 +49,7 @@
+        max(params.device.multi_devices.size(), 1)),
+   stats()
+ {
+-	device_use_gl = ((params.device.type != DEVICE_CPU) && !params.background);
++	device_use_gl = ((params.device.type != DEVICE_CPU && params.device.type != DEVICE_OPENMP) && !params.background);
+ 
+ 	TaskScheduler::init(params.threads);
+ 
+diff --git a/intern/cycles/util/util_debug.h b/intern/cycles/util/util_debug.h
+--- a/intern/cycles/util/util_debug.h
++++ b/intern/cycles/util/util_debug.h
+@@ -22,6 +22,8 @@
+ 
+ #include "util/util_static_assert.h"
+ 
++#ifndef __KERNEL_OFFLOAD__
++
+ CCL_NAMESPACE_BEGIN
+ 
+ /* Global storage for all sort of flags used to fine-tune behavior of particular
+@@ -162,4 +164,6 @@
+ 
+ CCL_NAMESPACE_END
+ 
++#endif
++
+ #endif /* __UTIL_DEBUG_H__ */
+diff --git a/intern/cycles/util/util_optimization.h b/intern/cycles/util/util_optimization.h
+--- a/intern/cycles/util/util_optimization.h
++++ b/intern/cycles/util/util_optimization.h
+@@ -18,6 +18,7 @@
+ #define __UTIL_OPTIMIZATION_H__
+ 
+ #ifndef __KERNEL_GPU__
++#ifndef __KERNEL_OFFLOAD__
+ 
+ /* quiet unused define warnings */
+ #if defined(__KERNEL_SSE2__)  || \
+@@ -116,6 +117,7 @@
+ #endif
+ 
+ #endif
++#endif
+ 
+ #endif /* __UTIL_OPTIMIZATION_H__ */
+ 
+diff --git a/source/blender/blenkernel/CMakeLists.txt b/source/blender/blenkernel/CMakeLists.txt
+--- a/source/blender/blenkernel/CMakeLists.txt
++++ b/source/blender/blenkernel/CMakeLists.txt
+@@ -535,6 +535,13 @@
+ #	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /WX")
+ #endif()
+ 
++if(CMAKE_C_COMPILER_ID MATCHES "Intel")
++	string(REGEX REPLACE "-O3" "-O1" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
++	string(REGEX REPLACE "-O3" "-O1" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
++
++	string(REGEX REPLACE "-O2" "-O1" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
++	string(REGEX REPLACE "-O2" "-O1" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
++endif()
+ if(WITH_LEGACY_DEPSGRAPH)
+ 	add_definitions(-DWITH_LEGACY_DEPSGRAPH)
+ endif()
+diff --git a/source/blender/blenlib/BLI_utildefines.h b/source/blender/blenlib/BLI_utildefines.h
+--- a/source/blender/blenlib/BLI_utildefines.h
++++ b/source/blender/blenlib/BLI_utildefines.h
+@@ -435,7 +435,7 @@
+ 	} (void)0
+ 
+ /* assuming a static array */
+-#if defined(__GNUC__) && !defined(__cplusplus) && !defined(__clang__)
++#if defined(__GNUC__) && !defined(__cplusplus) && !defined(__clang__) && !defined(__INTEL_COMPILER)
+ #  define ARRAY_SIZE(arr) \
+ 	((sizeof(struct {int isnt_array : ((const void *)&(arr) == &(arr)[0]);}) * 0) + \
+ 	 (sizeof(arr) / sizeof(*(arr))))
+

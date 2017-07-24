@@ -1,0 +1,12 @@
+diff a/intern/cycles/blender/addon/properties.py b/intern/cycles/blender/addon/properties.py	(rejected hunks)
+@@ -1306,6 +1312,10 @@
+             for device in opencl_devices:
+                 col.prop(device, "use", text=device.name, toggle=True)
+ 
++        if self.compute_device_type == 'OPENMP' and openmp_devices:
++            col = row.column(align=True)
++            for device in openmp_devices:
++                col.prop(device, "use", text=device.name, toggle=True)
+ 
+     def draw(self, context):
+         self.draw_impl(self.layout, context)

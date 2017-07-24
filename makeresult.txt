@@ -1,0 +1,34 @@
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp:131:29: warning: unused parameter ‘name’ [-Wunused-parameter]
+  void mem_alloc(const char *name, device_memory& mem, MemoryType /*type*/)
+                             ^
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp: In member function ‘void ccl::OpenMPDeviceCPU::thread_run(ccl::DeviceTask*)’:
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp:210:21: error: ‘PATH_TRACE’ is not a member of ‘ccl::DeviceTask’
+   if (task->type == DeviceTask::PATH_TRACE)
+                     ^
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp: At global scope:
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp:559:29: warning: unused parameter ‘name’ [-Wunused-parameter]
+  void mem_alloc(const char *name, device_memory& mem, MemoryType /*type*/)
+                             ^
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp: In member function ‘void ccl::OpenMPDeviceOffload::thread_run(ccl::DeviceTask*)’:
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp:649:21: error: ‘PATH_TRACE’ is not a member of ‘ccl::DeviceTask’
+   if (task->type == DeviceTask::PATH_TRACE)
+                     ^
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp: In member function ‘void ccl::OpenMPDeviceOffload::thread_path_trace(ccl::DeviceTask&)’:
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp:680:11: warning: unused variable ‘render_buffer’ [-Wunused-variable]
+    float *render_buffer = (float*) tile.buffer;
+           ^
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp:681:10: warning: unused variable ‘rng_state’ [-Wunused-variable]
+    uint *rng_state = (uint*) tile.rng_state;
+          ^
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp: At global scope:
+/home/matheusmortatti/blender-git/blender/intern/cycles/device/device_openmp.cpp:741:39: warning: unused parameter ‘task’ [-Wunused-parameter]
+  int get_split_task_count(DeviceTask& task)
+                                       ^
+intern/cycles/device/CMakeFiles/cycles_device.dir/build.make:254: recipe for target 'intern/cycles/device/CMakeFiles/cycles_device.dir/device_openmp.cpp.o' failed
+make[3]: *** [intern/cycles/device/CMakeFiles/cycles_device.dir/device_openmp.cpp.o] Error 1
+CMakeFiles/Makefile2:1279: recipe for target 'intern/cycles/device/CMakeFiles/cycles_device.dir/all' failed
+make[2]: *** [intern/cycles/device/CMakeFiles/cycles_device.dir/all] Error 2
+Makefile:160: recipe for target 'all' failed
+make[1]: *** [all] Error 2
+GNUmakefile:124: recipe for target 'all' failed
+make: *** [all] Error 2

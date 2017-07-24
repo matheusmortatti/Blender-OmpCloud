@@ -1,0 +1,10 @@
+diff a/intern/cycles/render/image.cpp b/intern/cycles/render/image.cpp	(rejected hunks)
+@@ -65,7 +65,7 @@
+ 		tex_start_images[IMAGE_DATA_TYPE_HALF] = TEX_START_HALF_ ## ARCH; \
+ 	}
+ 
+-	if(device_type == DEVICE_CPU) {
++	if(device_type == DEVICE_CPU || device_type == DEVICE_OPENMP) {
+ 		SET_TEX_IMAGES_LIMITS(CPU);
+ 	}
+ 	else if(device_type == DEVICE_CUDA) {

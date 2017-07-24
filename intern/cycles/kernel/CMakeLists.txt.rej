@@ -1,0 +1,18 @@
+diff a/intern/cycles/kernel/CMakeLists.txt b/intern/cycles/kernel/CMakeLists.txt	(rejected hunks)
+@@ -386,6 +386,16 @@
+ 	set_source_files_properties(kernels/cpu/kernel_split_avx2.cpp PROPERTIES COMPILE_FLAGS "${CYCLES_AVX2_KERNEL_FLAGS}")
+ endif()
+ 
++if(WITH_CYCLES_DEVICE_OPENMP)
++	list(APPEND SRC_HEADERS
++		kernels/offload/kernel_offload.h
++	)
++
++	list(APPEND SRC
++		kernels/offload/kernel_offload.cpp
++	)
++endif()
++
+ add_library(cycles_kernel
+ 	${SRC}
+ 	${SRC_HEADERS}
