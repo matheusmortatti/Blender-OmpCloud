@@ -293,6 +293,8 @@ public:
 						sample, x + tile.x, y + tile.y, tile.offset, tile.stride);
 			}
 
+			std::cout << "render_buffer: " << render_buffer << std::endl;
+
 			tile.sample = end_sample;
 			task.update_progress(&tile, tile.num_samples * tile.w * tile.h);
 			task.release_tile(tile);
