@@ -275,6 +275,10 @@ public:
 
 		omp_set_nested(1);
 
+/**************************************************************************************************
+* Test OMP output with local variables
+**************************************************************************************************/
+
 		while (task.acquire_tile(this, tile)) {
 			float *render_buffer = (float*)tile.buffer;
 			uint *rng_state = (uint*)tile.rng_state;
@@ -293,7 +297,24 @@ public:
 						sample, x + tile.x, y + tile.y, tile.offset, tile.stride);
 			}
 
-			std::cout << "render_buffer: " << render_buffer << std::endl;
+			std::cout << "render_buffer:\t\t" << render_buffer << std::endl;
+
+			KernelGlobals kg_tmp 		= kg;
+			float *render_buffer_tmp 	= (float*)tile.buffer;
+			uint *rng_state_tmp 		= (uint*)tile.rng_state;
+
+#pragma omp parallel for schedule(dynamic, 1) num_threads(TaskScheduler::num_threads())
+			for (int i = 0; i < tile_size; i++) {
+				int y = i / tile.w;
+				int x = i - y * tile.w;
+
+				for (int sample = start_sample; sample < end_sample; sample++)
+					path_trace_kernel(&kg_tmp, render_buffer_tmp, rng_state_tmp,
+						sample, x + tile.x, y + tile.y, tile.offset, tile.stride);
+			}
+
+
+			std::cout << "render_buffer_tmp:\t" << render_buffer_tmp << std::endl;
 
 			tile.sample = end_sample;
 			task.update_progress(&tile, tile.num_samples * tile.w * tile.h);
@@ -307,6 +328,7 @@ public:
 
 
 		thread_kernel_globals_free(&kg);
+		thread_kernel_globals_free(&kg_tmp);
 	}
 
 	void thread_film_convert(DeviceTask& task)
