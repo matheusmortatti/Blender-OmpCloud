@@ -1,0 +1,13 @@
+diff a/build_files/build_environment/install_deps.sh b/build_files/build_environment/install_deps.sh	(rejected hunks)
+@@ -2643,7 +2643,10 @@ install_DEB() {
+     _do_compile_llvm=true
+   else
+     check_package_DEB llvm-$LLVM_VERSION-dev
+-    if [ $? -eq 0 ]; then
++    llvm_available=$?
++    check_package_DEB clang-$LLVM_VERSION
++    clang_available=$?
++    if [ $llvm_available -eq 0 ] && [ $clang_available -eq 0 ]; then
+       install_packages_DEB llvm-$LLVM_VERSION-dev clang-$LLVM_VERSION
+       have_llvm=true
+       LLVM_VERSION_FOUND=$LLVM_VERSION

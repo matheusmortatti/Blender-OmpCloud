@@ -242,38 +242,44 @@ public:
 		if (system_cpu_support_avx2()) {
 			printf("system_cpu_support_avx2()\n");
 			path_trace_kernel = kernel_cpu_avx2_path_trace;
+			std::cout << "AVX2" << std::endl;
 		}
 		else
 #endif
 #ifdef WITH_CYCLES_OPTIMIZED_KERNEL_AVX
 			if (system_cpu_support_avx()) {
 			path_trace_kernel = kernel_cpu_avx_path_trace;
+			std::cout << "AVX" << std::endl;
 		}
 		else
 #endif
 #ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE41
 			if (system_cpu_support_sse41()) {
 			path_trace_kernel = kernel_cpu_sse41_path_trace;
+			std::cout << "SSE41" << std::endl;
 		}
 		else
 #endif
 #ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE3
 			if (system_cpu_support_sse3()) {
 			path_trace_kernel = kernel_cpu_sse3_path_trace;
+			std::cout << "SSE3" << std::endl;
 		}
 		else
 #endif
 #ifdef WITH_CYCLES_OPTIMIZED_KERNEL_SSE2
 			if (system_cpu_support_sse2()) {
 			path_trace_kernel = kernel_cpu_sse2_path_trace;
+			std::cout << "SSE2" << std::endl;
 		}
 		else
 #endif
 		{
 			path_trace_kernel = kernel_cpu_path_trace;
+			std::cout << "OTHER" << std::endl;
 		}
 
-		omp_set_nested(1);
+		//omp_set_nested(1);
 
 		while (task.acquire_tile(this, tile)) {
 			float *render_buffer = (float*)tile.buffer;
@@ -283,6 +289,7 @@ public:
 
 			int tile_size = tile.h * tile.w;
 
+#pragma omp target map(to: start_sample, end_sample, kg, rng_state, render_buffer) map(tofrom: tile)
 #pragma omp parallel for schedule(dynamic, 1) num_threads(TaskScheduler::num_threads())
 			for (int i = 0; i < tile_size; i++) {
 				int y = i / tile.w;

@@ -64,7 +64,7 @@ void offload_path_trace(int numDevice,
 		int tile_h,
 		int tile_w)
 {
-#pragma offload target(mic:numDevice)
+#pragma omp target //offload target(mic:numDevice)
 	{
 		int tile_size = tile_h*tile_w;
 
@@ -92,7 +92,7 @@ void offload_convert_to_half_float_kernel(int numDevice,
 		int task_h,
 		int task_w)
 {
-#pragma offload target(mic:numDevice)
+#pragma omp target //offload target(mic:numDevice)
 	{
 		int task_size = task_h*task_w;
 
@@ -120,7 +120,7 @@ void offload_convert_to_byte_kernel(int numDevice,
 		int task_h,
 		int task_w)
 {
-#pragma offload target(mic:numDevice)
+#pragma omp target //offload target(mic:numDevice)
 	{
 		int task_size = task_h*task_w;
 
@@ -148,7 +148,7 @@ void offload_shader_kernel(int numDevice,
 		int task_offset,
 		int sample)
 {
-#pragma offload target(mic:numDevice)
+#pragma omp target //offload target(mic:numDevice)
 	{
 #pragma omp parallel for schedule(dynamic, 1)
 		for (int x = task_shader_x; x < task_shader_x + task_shader_w; x++)
@@ -163,7 +163,7 @@ DEVICE_PTR offload_alloc_kg(int numDevice)
 {
 	DEVICE_PTR kg_bin = NULL;
 
-#pragma offload target(mic:numDevice) out(kg_bin)
+#pragma omp target map(from: kg_bin) //offload target(mic:numDevice) out(kg_bin)
 	{
 		KernelGlobals *kg = new KernelGlobals();
 		kg_bin = (DEVICE_PTR) kg;
@@ -174,7 +174,7 @@ DEVICE_PTR offload_alloc_kg(int numDevice)
 
 void offload_free_kg(int numDevice, DEVICE_PTR kg_bin)
 {
-#pragma offload target(mic:numDevice) in(kg_bin)
+#pragma omp target map(to: kg_bin) //offload target(mic:numDevice) in(kg_bin)
 	{
 		KernelGlobals *kg = (KernelGlobals *) kg_bin;
 		delete kg;
@@ -185,7 +185,7 @@ DEVICE_PTR offload_mem_alloc(int numDevice, DEVICE_PTR mem, SIZE_T memSize)
 {
 	DEVICE_PTR mem_device;
 
-#pragma offload target(mic:numDevice) out(mem_device)
+#pragma omp target map(from: mem_device) //offload target(mic:numDevice) out(mem_device)
 	{
 		mem_device = (DEVICE_PTR) new char[memSize];
 	}
@@ -195,7 +195,7 @@ DEVICE_PTR offload_mem_alloc(int numDevice, DEVICE_PTR mem, SIZE_T memSize)
 
 void offload_mem_copy_to(int numDevice, char *memh, DEVICE_PTR mem, SIZE_T memSize)
 {
-#pragma offload target(mic:numDevice) in(memh:length(memSize))
+#pragma omp target map(to: memh[0:memSize-1]) //offload target(mic:numDevice) in(memh:length(memSize))
 	{
 		memcpy((char*) mem, memh, memSize);
 	}
@@ -205,7 +205,7 @@ void offload_mem_copy_from(int numDevice, DEVICE_PTR mem, char *memh, SIZE_T off
 {
 	char *temp = new char[memSize];
 
-#pragma offload target(mic:numDevice) out(temp:length(memSize))
+#pragma omp target map(from: temp[0:memSize-1]) //offload target(mic:numDevice) out(temp:length(memSize))
 	{
 		memcpy(temp, (char*) mem + offset, memSize);
 	}
@@ -216,7 +216,7 @@ void offload_mem_copy_from(int numDevice, DEVICE_PTR mem, char *memh, SIZE_T off
 
 void offload_mem_zero(int numDevice, DEVICE_PTR mem, SIZE_T memSize)
 {
-#pragma offload target(mic:numDevice)
+#pragma omp target //offload target(mic:numDevice)
 	{
 		memset((char*) mem, 0, memSize);
 	}
@@ -224,7 +224,7 @@ void offload_mem_zero(int numDevice, DEVICE_PTR mem, SIZE_T memSize)
 
 void offload_mem_free(int numDevice, DEVICE_PTR mem, SIZE_T memSize)
 {
-#pragma offload target(mic:numDevice)
+#pragma omp target //offload target(mic:numDevice)
 	{
 		delete[](char*) mem;
 	}
@@ -233,7 +233,7 @@ void offload_mem_free(int numDevice, DEVICE_PTR mem, SIZE_T memSize)
 void offload_const_copy(int numDevice, DEVICE_PTR kg_bin, const char *name, char *host_bin, SIZE_T size)
 {
 	if (strcmp(name, "__data") == 0) {
-#pragma offload target(mic:numDevice) in(host_bin:length(size))
+#pragma omp target map(to: host_bin[0:size-1]) //offload target(mic:numDevice) in(host_bin:length(size))
 		{
 			KernelGlobals *kg = (KernelGlobals *) kg_bin;
 			memcpy(&kg->__data, host_bin, size);
@@ -241,7 +241,7 @@ void offload_const_copy(int numDevice, DEVICE_PTR kg_bin, const char *name, char
 	}
 }
 
-#pragma offload_attribute(push, target(mic))
+//#pragma offload_attribute(push, target(mic))
 void offload_kernel_tex_copy_internal(KernelGlobals *kg,
 		const char *name,
 		device_ptr mem,
@@ -361,7 +361,7 @@ void offload_kernel_tex_copy_internal(KernelGlobals *kg,
 	else
 		kernel_assert(0);
 }
-#pragma offload_attribute(pop)
+//#pragma offload_attribute(pop)
 
 DEVICE_PTR offload_tex_copy(int numDevice,
 		DEVICE_PTR kg_bin,
@@ -382,10 +382,10 @@ DEVICE_PTR offload_tex_copy(int numDevice,
 
 	DEVICE_PTR tex_mem_device = NULL;
 
-#pragma offload target(mic:numDevice) \
-            in(mem:length(size)) \
-            in(name:length(nameSize)) \
-            out(tex_mem_device)
+#pragma omp target \ //offload target(mic:numDevice) \
+            map(to: mem[0:size-1], name[0:nameSize-1]) \//in(mem:length(size)) \
+            //in(name:length(nameSize)) \
+            map(from: tex_mem_device )//out(tex_mem_device)
 	{
 		char* tex_mem_bin = new char[size];
 		memcpy(tex_mem_bin, mem, size);
@@ -407,7 +407,7 @@ void offload_tex_free(int numDevice, DEVICE_PTR kg_bin, DEVICE_PTR mem, SIZE_T m
 
 void offload_kernel_globals_init(int numDevice, DEVICE_PTR kg_bin)
 {
-#pragma offload target(mic:numDevice) in(kg_bin)
+#pragma omp target map(to: kg_bin) //offload target(mic:numDevice) in(kg_bin)
 	{
 		KernelGlobals *kg = (KernelGlobals *) kg_bin;
 
@@ -423,7 +423,7 @@ void offload_kernel_globals_init(int numDevice, DEVICE_PTR kg_bin)
 
 void offload_kernel_globals_free(int numDevice, DEVICE_PTR kg_bin)
 {
-#pragma offload target(mic:numDevice) in(kg_bin)
+#pragma omp target map(to: kg_bin) //offload target(mic:numDevice) in(kg_bin)
 	{
 		KernelGlobals *kg = (KernelGlobals *) kg_bin;
 		if (kg->transparent_shadow_intersections != NULL) {
@@ -442,7 +442,7 @@ void offload_kernel_globals_free(int numDevice, DEVICE_PTR kg_bin)
 int offload_devices()
 {
 #if _OPENMP >= 201307
-	return omp_get_num_devices();
+	return 1; //omp_get_num_devices();
 #else
 	const char *num = getenv("OMP_GET_NUM_DEVICES");
 	if (num) {
