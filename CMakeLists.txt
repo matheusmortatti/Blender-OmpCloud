@@ -1193,6 +1193,12 @@ if(WITH_GL_EGL)
 endif()
 
 #-----------------------------------------------------------------------------
+# Configure OpenMP targets
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fopenmp-targets=x86_64-pc-linux-gnu")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp-targets=x86_64-pc-linux-gnu")
+
+#-----------------------------------------------------------------------------
 # Configure OpenMP.
 if(WITH_OPENMP)
 	find_package(OpenMP)
