@@ -92,3 +92,6 @@ endif()
 if(WITH_OPENVDB)
 	add_subdirectory(openvdb)
 endif()
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp-targets=x86_64-pc-linux-gnu")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fopenmp-targets=x86_64-pc-linux-gnu")

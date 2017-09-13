@@ -80,6 +80,12 @@ elseif(CMAKE_COMPILER_IS_GNUCC)
 	endif()
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math -fno-finite-math-only")
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+
+#---------------------------------------------------------------------------------------
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp-targets=x86_64-pc-linux-gnu")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fopenmp-targets=x86_64-pc-linux-gnu")
+#---------------------------------------------------------------------------------------
+
 	check_cxx_compiler_flag(-msse CXX_HAS_SSE)
 	check_cxx_compiler_flag(-mavx CXX_HAS_AVX)
 	check_cxx_compiler_flag(-mavx2 CXX_HAS_AVX2)

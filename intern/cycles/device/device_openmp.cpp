@@ -289,7 +289,8 @@ public:
 
 			int tile_size = tile.h * tile.w;
 
-#pragma omp target map(to: start_sample, end_sample, kg, rng_state, render_buffer) map(tofrom: tile)
+#pragma omp target map(to: start_sample, end_sample, kg, rng_state, render_buffer) map(tofrom: tile) 
+//{
 #pragma omp parallel for schedule(dynamic, 1) num_threads(TaskScheduler::num_threads())
 			for (int i = 0; i < tile_size; i++) {
 				int y = i / tile.w;
@@ -299,6 +300,7 @@ public:
 					path_trace_kernel(&kg, render_buffer, rng_state,
 						sample, x + tile.x, y + tile.y, tile.offset, tile.stride);
 			}
+//}
 
 			tile.sample = end_sample;
 			task.update_progress(&tile, tile.num_samples * tile.w * tile.h);
