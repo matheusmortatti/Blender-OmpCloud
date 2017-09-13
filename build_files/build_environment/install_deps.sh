@@ -2601,7 +2601,7 @@ install_DEB() {
   fi
 
   # These libs should always be available in debian/ubuntu official repository...
-  OPENJPEG_DEV="libopenjpeg-dev"
+  OPENJPEG_DEV= "libopenjpeg-dev"
   VORBIS_DEV="libvorbis-dev"
   OGG_DEV="libogg-dev"
   THEORA_DEV="libtheora-dev"
@@ -2614,7 +2614,7 @@ install_DEB() {
              libsdl1.2-dev libfftw3-dev patch bzip2 libxml2-dev libtinyxml-dev libjemalloc-dev"
              # libglewmx-dev  (broken in deb testing currently...)
 
-  OPENJPEG_USE=true
+  OPENJPEG_USE=false
   VORBIS_USE=true
   OGG_USE=true
   THEORA_USE=true
